@@ -53,6 +53,8 @@ static struct {
 	unsigned long find_total;
 } swap_cache_info;
 
+static atomic_t swapin_readahead_hits = ATOMIC_INIT(4);
+
 void show_swap_cache_info(void)
 {
 	printk("%lu pages in swap cache\n", total_swapcache_pages);
@@ -265,8 +267,11 @@ struct page * lookup_swap_cache(swp_entry_t entry)
 
 	page = find_get_page(&swapper_space, entry.val);
 
-	if (page)
+	if (page) {
 		INC_CACHE_INFO(find_success);
+		if (TestClearPageReadahead(page))
+			atomic_inc(&swapin_readahead_hits);
+	}
 
 	INC_CACHE_INFO(find_total);
 	return page;
@@ -351,6 +356,43 @@ struct page *read_swap_cache_async(swp_entry_t entry, gfp_t gfp_mask,
 	return found_page;
 }
 
+unsigned long swapin_nr_pages(unsigned long offset)
+{
+	static unsigned long prev_offset;
+	static atomic_t last_readahead_pages;
+	unsigned int pages, max_pages;
+
+	max_pages = 1 << ACCESS_ONCE(page_cluster);
+	if (max_pages <= 1)
+		return 1;
+
+	/*
+	 * swapout always tries to find a cluster to do swap. The cluster is
+	 * shared by all processes (kswapds, direct page reclaim) who do swap.
+	 * The result is swapout adjacent memory could cause interleave access
+	 * pattern to disk. We do aggressive swapin in non-random access case
+	 * to avoid skip swapin in interleave access pattern.
+	 */
+	pages = atomic_xchg(&swapin_readahead_hits, 0);
+	if (!pages) {
+		/*
+		 * We can have no readahead hits to judge by: but must not get
+		 * stuck here forever, so check for an adjacent offset instead
+		 * (and don't even bother to check whether swap type is same).
+		 */
+		if (offset != prev_offset + 1 && offset != prev_offset - 1) {
+			pages = atomic_read(&last_readahead_pages) * 3 / 4;
+			pages = max_t(unsigned int, pages, 1);
+		} else
+			pages = max_pages;
+		prev_offset = offset;
+	} else
+		pages = max_pages;
+
+	atomic_set(&last_readahead_pages, pages);
+	return pages;
+}
+
 /**
  * swapin_readahead - swap in pages in hope we need them soon
  * @entry: swap entry of this memory
@@ -374,10 +416,15 @@ struct page *swapin_readahead(swp_entry_t entry, gfp_t gfp_mask,
 			struct vm_area_struct *vma, unsigned long addr)
 {
 	struct page *page;
-	unsigned long offset = swp_offset(entry);
+	unsigned long entry_offset = swp_offset(entry);
+	unsigned long offset = entry_offset;
 	unsigned long start_offset, end_offset;
-	unsigned long mask = (1UL << page_cluster) - 1;
+	unsigned long mask;
 	struct blk_plug plug;
+
+	mask = swapin_nr_pages(offset) - 1;
+	if (!mask)
+		goto skip;
 
 	/* Read a page_cluster sized and aligned cluster around offset. */
 	start_offset = offset & ~mask;
@@ -392,10 +439,13 @@ struct page *swapin_readahead(swp_entry_t entry, gfp_t gfp_mask,
 						gfp_mask, vma, addr);
 		if (!page)
 			continue;
+		if (offset != entry_offset)
+			SetPageReadahead(page);
 		page_cache_release(page);
 	}
 	blk_finish_plug(&plug);
 
 	lru_add_drain();	/* Push any new pages onto the LRU now */
+skip:
 	return read_swap_cache_async(entry, gfp_mask, vma, addr);
 }
