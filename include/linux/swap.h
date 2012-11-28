@@ -185,6 +185,9 @@ struct swap_info_struct {
 	signed char	next;		/* next type on the swap list */
 	unsigned int	max;		/* extent of the swap_map */
 	unsigned char *swap_map;	/* vmalloc'ed array of usage counts */
+	unsigned int *cluster_info;	/* cluster info. Only for SSD */
+	unsigned int free_cluster_head;
+	unsigned int free_cluster_tail;
 	unsigned int lowest_bit;	/* index of first free in swap_map */
 	unsigned int highest_bit;	/* index of last free in swap_map */
 	unsigned int pages;		/* total of usable pages of swap */
