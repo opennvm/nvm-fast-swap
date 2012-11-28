@@ -1708,7 +1708,8 @@ out:
 		unsigned long scan;
 
 		scan = get_lru_size(lruvec, lru);
-		if (sc->priority || noswap || !vmscan_swappiness(sc)) {
+		if (sc->priority || noswap || !vmscan_swappiness(sc)
+		    || vmscan_swappiness(sc) == 200) {
 			scan >>= sc->priority;
 			if (!scan && force_scan)
 				scan = SWAP_CLUSTER_MAX;
@@ -3174,6 +3175,8 @@ static inline unsigned long zone_unmapped_file_pages(struct zone *zone)
 	unsigned long file_lru = zone_page_state(zone, NR_INACTIVE_FILE) +
 		zone_page_state(zone, NR_ACTIVE_FILE);
 
+	if (vm_swappiness == 200)
+		return 0;
 	/*
 	 * It's possible for there to be more file mapped pages than
 	 * accounted for by the pages on the file LRU lists because
