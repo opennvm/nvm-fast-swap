@@ -175,6 +175,11 @@ enum {
 #define COUNT_CONTINUED	0x80	/* See swap_map continuation for full count */
 #define SWAP_MAP_SHMEM	0xbf	/* Owned by shmem/tmpfs, in first swap_map */
 
+struct percpu_cluster {
+	unsigned int index; /* Current cluster index */
+	unsigned int next; /* Likely next allocation offset */
+};
+
 /*
  * The in-memory structure used to track swap areas.
  */
@@ -194,6 +199,7 @@ struct swap_info_struct {
 	unsigned int inuse_pages;	/* number of those currently in use */
 	unsigned int cluster_next;	/* likely index for next allocation */
 	unsigned int cluster_nr;	/* countdown to next cluster search */
+	struct percpu_cluster *percpu_cluster;
 	unsigned int lowest_alloc;	/* while preparing discard cluster */
 	unsigned int highest_alloc;	/* while preparing discard cluster */
 	struct swap_extent *curr_swap_extent;

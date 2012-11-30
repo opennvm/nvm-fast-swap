@@ -261,6 +261,53 @@ static inline bool scan_swap_map_recheck_cluster(struct swap_info_struct *si,
 		cluster_is_free(si->cluster_info[offset]);
 }
 
+static void scan_swap_map_try_cluster(struct swap_info_struct *si,
+	unsigned long *offset, int *found_free_cluster)
+{
+	struct percpu_cluster *cluster;
+	bool found_free;
+	unsigned long tmp;
+
+new_cluster:
+	cluster = this_cpu_ptr(si->percpu_cluster);
+	if (cluster->index == CLUSTER_NULL) {
+		if (si->free_cluster_head != CLUSTER_NULL) {
+			cluster->index = si->free_cluster_head;
+			cluster->next = cluster->index * SWAPFILE_CLUSTER;
+			*found_free_cluster = 1;
+		} else {
+			/*
+			 * Checking free cluster is fast enough, we can do the
+			 * check every time
+			 */
+			si->cluster_nr = 0;
+			si->lowest_alloc = 0;
+			return;
+		}
+	}
+
+	found_free = false;
+
+	/*
+	 * Other CPUs can use our cluster if they can't find a free cluster,
+	 * check if there is still free entry in the cluster
+	 */
+	tmp = cluster->next;
+	while (tmp < si->max && tmp < (cluster->index + 1) * SWAPFILE_CLUSTER) {
+		if (!si->swap_map[tmp]) {
+			found_free = true;
+			break;
+		}
+		tmp++;
+	}
+	if (!found_free) {
+		cluster->index = CLUSTER_NULL;
+		goto new_cluster;
+	}
+	cluster->next = tmp + 1;
+	*offset = tmp;
+}
+
 static unsigned long scan_swap_map(struct swap_info_struct *si,
 				   unsigned char usage)
 {
@@ -284,6 +331,21 @@ static unsigned long scan_swap_map(struct swap_info_struct *si,
 	si->flags += SWP_SCANNING;
 	scan_base = offset = si->cluster_next;
 
+check_cluster:
+	if (si->cluster_info) {
+		found_free_cluster = 0;
+		scan_swap_map_try_cluster(si, &offset, &found_free_cluster);
+		if (found_free_cluster) {
+			/* offset must be the first entry of the cluster */
+			VM_BUG_ON(offset / SWAPFILE_CLUSTER);
+			last_in_cluster = offset + SWAPFILE_CLUSTER - 1;
+			si->cluster_next = offset;
+			si->cluster_nr = SWAPFILE_CLUSTER - 1;
+		}
+		scan_base = offset;
+		goto checks;
+	}
+
 	if (unlikely(!si->cluster_nr--)) {
 		if (si->pages - si->inuse_pages < SWAPFILE_CLUSTER) {
 			si->cluster_nr = SWAPFILE_CLUSTER - 1;
@@ -302,24 +364,6 @@ static unsigned long scan_swap_map(struct swap_info_struct *si,
 			si->lowest_alloc = si->max;
 			si->highest_alloc = 0;
 		}
-check_cluster:
-		if (si->free_cluster_head != CLUSTER_NULL) {
-			offset = si->free_cluster_head * SWAPFILE_CLUSTER;
-			last_in_cluster = offset + SWAPFILE_CLUSTER - 1;
-			si->cluster_next = offset;
-			si->cluster_nr = SWAPFILE_CLUSTER - 1;
-			found_free_cluster = 1;
-			goto checks;
-		} else if (si->cluster_info) {
-			/*
-			 * Checking free cluster is fast enough, we can do the
-			 * check every time
-			 */
-			si->cluster_nr = 0;
-			si->lowest_alloc = 0;
-			goto checks;
-		}
-
 		spin_unlock(&swap_lock);
 
 		/*
@@ -380,8 +424,12 @@ check_cluster:
 	}
 
 checks:
-	if (scan_swap_map_recheck_cluster(si, offset))
+	if (scan_swap_map_recheck_cluster(si, offset)) {
+		struct percpu_cluster *percpu_cluster;
+		percpu_cluster = this_cpu_ptr(si->percpu_cluster);
+		percpu_cluster->index = CLUSTER_NULL;
 		goto check_cluster;
+	}
 	if (!(si->flags & SWP_WRITEOK))
 		goto no_page;
 	if (!si->highest_bit)
@@ -1693,6 +1741,8 @@ SYSCALL_DEFINE1(swapoff, const char __user *, specialfile)
 	frontswap_invalidate_area(type);
 	spin_unlock(&swap_lock);
 	mutex_unlock(&swapon_mutex);
+	free_percpu(p->percpu_cluster);
+	p->percpu_cluster = NULL;
 	vfree(swap_map);
 	vfree(cluster_info);
 	vfree(frontswap_map_get(p));
@@ -2180,6 +2230,12 @@ SYSCALL_DEFINE2(swapon, const char __user *, specialfile, int, swap_flags)
 			error = -ENOMEM;
 			goto bad_swap;
 		}
+		/* It's fine to initialize percpu_cluster to 0 */
+		p->percpu_cluster = alloc_percpu(struct percpu_cluster);
+		if (!p->percpu_cluster) {
+			error = -ENOMEM;
+			goto bad_swap;
+		}
 	}
 
 	error = swap_cgroup_swapon(p->type, maxpages);
@@ -2223,6 +2279,8 @@ SYSCALL_DEFINE2(swapon, const char __user *, specialfile, int, swap_flags)
 	error = 0;
 	goto out;
 bad_swap:
+	free_percpu(p->percpu_cluster);
+	p->percpu_cluster = NULL;
 	if (inode && S_ISBLK(inode->i_mode) && p->bdev) {
 		set_blocksize(p->bdev, p->old_block_size);
 		blkdev_put(p->bdev, FMODE_READ | FMODE_WRITE | FMODE_EXCL);
