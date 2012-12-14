@@ -4,52 +4,6 @@
 #include <linux/radix-tree.h>
 #include <linux/bug.h>
 
-/*
- * swapcache pages are stored in the swapper_space radix tree.  We want to
- * get good packing density in that tree, so the index should be dense in
- * the low-order bits.
- *
- * We arrange the `type' and `offset' fields so that `type' is at the seven
- * high-order bits of the swp_entry_t and `offset' is right-aligned in the
- * remaining bits.  Although `type' itself needs only five bits, we allow for
- * shmem/tmpfs to shift it all up a further two bits: see swp_to_radix_entry().
- *
- * swp_entry_t's are *never* stored anywhere in their arch-dependent format.
- */
-#define SWP_TYPE_SHIFT(e)	((sizeof(e.val) * 8) - \
-			(MAX_SWAPFILES_SHIFT + RADIX_TREE_EXCEPTIONAL_SHIFT))
-#define SWP_OFFSET_MASK(e)	((1UL << SWP_TYPE_SHIFT(e)) - 1)
-
-/*
- * Store a type+offset into a swp_entry_t in an arch-independent format
- */
-static inline swp_entry_t swp_entry(unsigned long type, pgoff_t offset)
-{
-	swp_entry_t ret;
-
-	ret.val = (type << SWP_TYPE_SHIFT(ret)) |
-			(offset & SWP_OFFSET_MASK(ret));
-	return ret;
-}
-
-/*
- * Extract the `type' field from a swp_entry_t.  The swp_entry_t is in
- * arch-independent format
- */
-static inline unsigned swp_type(swp_entry_t entry)
-{
-	return (entry.val >> SWP_TYPE_SHIFT(entry));
-}
-
-/*
- * Extract the `offset' field from a swp_entry_t.  The swp_entry_t is in
- * arch-independent format
- */
-static inline pgoff_t swp_offset(swp_entry_t entry)
-{
-	return entry.val & SWP_OFFSET_MASK(entry);
-}
-
 #ifdef CONFIG_MMU
 /* check whether a pte points to a swap entry */
 static inline int is_swap_pte(pte_t pte)
