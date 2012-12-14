@@ -261,6 +261,7 @@ struct swap_info_struct {
 	unsigned long *frontswap_map;	/* frontswap in-use, one bit per page */
 	atomic_t frontswap_pages;	/* frontswap pages in-use counter */
 #endif
+	spinlock_t lock;
 };
 
 struct swap_list_t {
@@ -269,7 +270,8 @@ struct swap_list_t {
 };
 
 /* Swap 50% full? Release swapcache more aggressively.. */
-#define vm_swap_full() (nr_swap_pages*2 < total_swap_pages)
+#define vm_swap_full() \
+	(atomic_long_read(&nr_swap_pages)*2 < total_swap_pages)
 
 /* linux/mm/page_alloc.c */
 extern unsigned long totalram_pages;
@@ -406,7 +408,7 @@ extern struct page *swapin_readahead(swp_entry_t, gfp_t,
 			struct vm_area_struct *vma, unsigned long addr);
 
 /* linux/mm/swapfile.c */
-extern long nr_swap_pages;
+extern atomic_long_t nr_swap_pages;
 extern long total_swap_pages;
 extern void si_swapinfo(struct sysinfo *);
 extern swp_entry_t get_swap_page(void);

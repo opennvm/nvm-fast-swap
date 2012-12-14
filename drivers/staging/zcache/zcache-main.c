@@ -927,8 +927,8 @@ static struct kobj_attribute zcache_zv_page_count_policy_percent_attr = {
  */
 
 /* useful stats not collected by cleancache or frontswap */
-static unsigned long zcache_flush_total;
-static unsigned long zcache_flush_found;
+static atomic_long_t zcache_flush_total;
+static atomic_long_t zcache_flush_found;
 static unsigned long zcache_flobj_total;
 static unsigned long zcache_flobj_found;
 static unsigned long zcache_failed_eph_puts;
@@ -1428,6 +1428,17 @@ static struct notifier_block zcache_cpu_notifier_block = {
 		.show = zcache_##_name##_show, \
 	}
 
+#define ZCACHE_SYSFS_RO_ATOMIC_LONG(_name) \
+	static ssize_t zcache_##_name##_show(struct kobject *kobj, \
+				struct kobj_attribute *attr, char *buf) \
+	{ \
+	    return sprintf(buf, "%lu\n", atomic_long_read(&zcache_##_name)); \
+	} \
+	static struct kobj_attribute zcache_##_name##_attr = { \
+		.attr = { .name = __stringify(_name), .mode = 0444 }, \
+		.show = zcache_##_name##_show, \
+	}
+
 #define ZCACHE_SYSFS_RO_CUSTOM(_name, _func) \
 	static ssize_t zcache_##_name##_show(struct kobject *kobj, \
 				struct kobj_attribute *attr, char *buf) \
@@ -1441,8 +1452,8 @@ static struct notifier_block zcache_cpu_notifier_block = {
 
 ZCACHE_SYSFS_RO(curr_obj_count_max);
 ZCACHE_SYSFS_RO(curr_objnode_count_max);
-ZCACHE_SYSFS_RO(flush_total);
-ZCACHE_SYSFS_RO(flush_found);
+ZCACHE_SYSFS_RO_ATOMIC_LONG(flush_total);
+ZCACHE_SYSFS_RO_ATOMIC_LONG(flush_found);
 ZCACHE_SYSFS_RO(flobj_total);
 ZCACHE_SYSFS_RO(flobj_found);
 ZCACHE_SYSFS_RO(failed_eph_puts);
@@ -1614,7 +1625,7 @@ static int zcache_flush_page(int cli_id, int pool_id,
 	unsigned long flags;
 
 	local_irq_save(flags);
-	zcache_flush_total++;
+	atomic_long_inc(&zcache_flush_total);
 	pool = zcache_get_pool_by_id(cli_id, pool_id);
 	if (likely(pool != NULL)) {
 		if (atomic_read(&pool->obj_count) > 0)
@@ -1622,7 +1633,7 @@ static int zcache_flush_page(int cli_id, int pool_id,
 		zcache_put_pool(pool);
 	}
 	if (ret >= 0)
-		zcache_flush_found++;
+		atomic_long_inc(&zcache_flush_found);
 	local_irq_restore(flags);
 	return ret;
 }
