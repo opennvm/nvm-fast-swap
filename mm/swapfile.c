@@ -2404,7 +2404,7 @@ static int __swap_duplicate(swp_entry_t entry, unsigned char usage)
 
 	type = swp_type(entry);
 	if (type >= nr_swapfiles)
-		goto bad_file;
+		goto out;
 	p = swap_info[type];
 	offset = swp_offset(entry);
 
@@ -2446,10 +2446,6 @@ unlock_out:
 	spin_unlock(&p->lock);
 out:
 	return err;
-
-bad_file:
-	printk(KERN_ERR "swap_dup: %s%08lx\n", Bad_file, entry.val);
-	goto out;
 }
 
 /*
