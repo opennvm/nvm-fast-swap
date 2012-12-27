@@ -339,7 +339,7 @@ check_cluster:
 		scan_swap_map_try_cluster(si, &offset, &found_free_cluster);
 		if (found_free_cluster) {
 			/* offset must be the first entry of the cluster */
-			VM_BUG_ON(offset / SWAPFILE_CLUSTER);
+			VM_BUG_ON(offset % SWAPFILE_CLUSTER);
 			last_in_cluster = offset + SWAPFILE_CLUSTER - 1;
 			si->cluster_next = offset;
 			si->cluster_nr = SWAPFILE_CLUSTER - 1;
