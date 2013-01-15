@@ -130,26 +130,26 @@ out:
 	return error;
 }
 
-/*
- * we can't hold pagetable lock here to do swap read, so the pte entry can be
- * complete garbage, for example, rmap is zapping the pte. We double check if
- * the entry is valid. It's still possible we attach unnecessary pages to
- * swapper address space, such pages will be reclaimed later.
- */
+#ifdef CONFIG_SWAP
 static int swapin_walk_pmd_entry(pmd_t *pmd, unsigned long start,
 	unsigned long end, struct mm_walk *walk)
 {
 	pte_t *orig_pte;
 	struct vm_area_struct *vma = walk->private;
+	unsigned long index;
 
 	if (pmd_none_or_trans_huge_or_clear_bad(pmd))
 		return 0;
 
-	orig_pte = pte_offset_map(pmd, start);
-	for (; start != end; start += PAGE_SIZE, orig_pte++) {
-		pte_t pte = *orig_pte;
+	for (index = start; index != end; index += PAGE_SIZE) {
+		pte_t pte;
 		swp_entry_t entry;
 		struct page *page;
+		spinlock_t *ptl;
+
+		orig_pte = pte_offset_map_lock(vma->vm_mm, pmd, start, &ptl);
+		pte = *(orig_pte + ((index - start) / PAGE_SIZE));
+		pte_unmap_unlock(orig_pte, ptl);
 
 		if (pte_present(pte) || pte_none(pte) || pte_file(pte))
 			continue;
@@ -158,12 +158,10 @@ static int swapin_walk_pmd_entry(pmd_t *pmd, unsigned long start,
 			continue;
 
 		page = read_swap_cache_async(entry, GFP_HIGHUSER_MOVABLE,
-								vma, start);
+								vma, index);
 		if (page)
 			page_cache_release(page);
 	}
-
-	pte_unmap(orig_pte - 1);
 
 	return 0;
 }
@@ -208,6 +206,7 @@ static void force_shm_swapin_readahead(struct vm_area_struct *vma,
 
 	lru_add_drain();	/* Push any new pages onto the LRU now */
 }
+#endif
 
 /*
  * Schedule all required I/O operations.  Do not wait for completion.
@@ -506,14 +505,14 @@ SYSCALL_DEFINE3(madvise, unsigned long, start, size_t, len_in, int, behavior)
 		/* Still start < end. */
 		error = -ENOMEM;
 		if (!vma)
-			goto out;
+			goto out_plug;
 
 		/* Here start < (end|vma->vm_end). */
 		if (start < vma->vm_start) {
 			unmapped_error = -ENOMEM;
 			start = vma->vm_start;
 			if (start >= end)
-				goto out;
+				goto out_plug;
 		}
 
 		/* Here vma->vm_start <= start < (end|vma->vm_end) */
@@ -524,20 +523,21 @@ SYSCALL_DEFINE3(madvise, unsigned long, start, size_t, len_in, int, behavior)
 		/* Here vma->vm_start <= start < tmp <= (end|vma->vm_end). */
 		error = madvise_vma(vma, &prev, start, tmp, behavior);
 		if (error)
-			goto out;
+			goto out_plug;
 		start = tmp;
 		if (prev && start < prev->vm_end)
 			start = prev->vm_end;
 		error = unmapped_error;
 		if (start >= end)
-			goto out;
+			goto out_plug;
 		if (prev)
 			vma = prev->vm_next;
 		else	/* madvise_remove dropped mmap_sem */
 			vma = find_vma(current->mm, start);
 	}
-out:
+out_plug:
 	blk_finish_plug(&plug);
+out:
 	if (write)
 		up_write(&current->mm->mmap_sem);
 	else
